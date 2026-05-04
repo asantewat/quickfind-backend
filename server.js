@@ -1,120 +1,252 @@
-const express = require('express');
+require("dotenv").config();
+
+const express = require("express");
 const mongoose = require("mongoose");
-const cors = require('cors');
+const cors = require("cors");
+const bcrypt = require("bcryptjs");
+
 const Vendor = require("./models/Vendor");
+const User = require("./models/User");
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
+// Middleware
 app.use(cors());
 app.use(express.json());
 
-// Connect to MongoDB
-mongoose.connect("mongodb+srv://quickfind_user:5Haron.com05qf@quickfind.qpfg8ox.mongodb.net/?appName=Quickfind")
-    .then(() => console.log("✅ Connected to MongoDB"))
-    .catch(err => console.log("❌ MongoDB connection error:", err));
+// MongoDB connection
+mongoose
+  .connect(process.env.MONGO_URI)
+  .then(() => console.log("✅ Connected to MongoDB"))
+  .catch((error) => console.error("❌ MongoDB connection error:", error));
 
 // Test route
-app.get('/', (req, res) => {
-    res.json({ message: 'QuickFind backend is connected to MongoDB' });
+app.get("/", (req, res) => {
+  res.json({ message: "QuickFind backend is connected to MongoDB" });
 });
 
+// =========================
+// VENDOR ROUTES
+// =========================
+
 // GET all approved vendors
-app.get('/vendors', async (req, res) => {
-    try {
-        const vendors = await Vendor.find({ status: "approved" });
-        res.json(vendors);
-    } catch (error) {
-        res.status(500).json({ error: "Database error" });
-    }
+app.get("/vendors", async (req, res) => {
+  try {
+    const vendors = await Vendor.find({ status: "approved" });
+    res.json(vendors);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// GET pending vendors (for admin)
+// IMPORTANT: must come before /vendors/:category
+app.get("/vendors/pending", async (req, res) => {
+  try {
+    const vendors = await Vendor.find({ status: "pending" });
+    res.json(vendors);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// GET vendors by vendor email (for vendor dashboard)
+// IMPORTANT: must come before /vendors/:category
+app.get("/vendors/vendor-email/:email", async (req, res) => {
+  try {
+    const email = decodeURIComponent(req.params.email);
+    const vendors = await Vendor.find({ email });
+    res.json(vendors);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Database error" });
+  }
 });
 
 // GET one vendor by ID
-app.get('/vendors/id/:id', async (req, res) => {
-    try {
-        const vendor = await Vendor.findById(req.params.id);
+app.get("/vendors/id/:id", async (req, res) => {
+  try {
+    const vendor = await Vendor.findById(req.params.id);
 
-        if (!vendor) {
-            return res.status(404).json({ message: "Vendor not found" });
-        }
-
-        res.json(vendor);
-    } catch (error) {
-        res.status(500).json({ error: "Database error" });
+    if (!vendor) {
+      return res.status(404).json({ message: "Vendor not found" });
     }
+
+    res.json(vendor);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// GET vendors by location
+app.get("/vendors/location/:location", async (req, res) => {
+  try {
+    const location = decodeURIComponent(req.params.location);
+
+    const vendors = await Vendor.find({
+      location: { $regex: location, $options: "i" },
+      status: "approved"
+    });
+
+    res.json(vendors);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Database error" });
+  }
 });
 
 // GET vendors by category
-app.get('/vendors/:category', async (req, res) => {
-    try {
-        const vendors = await Vendor.find({
-            category: req.params.category,
-            status: "approved"
-        });
+app.get("/vendors/:category", async (req, res) => {
+  try {
+    const category = decodeURIComponent(req.params.category);
 
-        res.json(vendors);
-    } catch (error) {
-        res.status(500).json({ error: "Database error" });
-    }
-});
-// GET vendors by location
-app.get('/vendors/location/:location', async (req, res) => {
-    try {
-        const vendors = await Vendor.find({
-            location: req.params.location,
-            status: "approved"
-        });
+    const vendors = await Vendor.find({
+      category,
+      status: "approved"
+    });
 
-        if (vendors.length === 0) {
-            return res.status(404).json({ message: "No vendors found in this location" });
-        }
-
-        res.json(vendors);
-    } catch (error) {
-        res.status(500).json({ error: "Database error" });
-    }
+    res.json(vendors);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Database error" });
+  }
 });
 
-// POST add vendor
-app.post('/vendors', async (req, res) => {
-    try {
-        const vendor = new Vendor(req.body);
-        await vendor.save();
+// POST vendor submission
+app.post("/vendors", async (req, res) => {
+  try {
+    const { business_name, category, location, phone, image, email } = req.body;
 
-        res.json({ message: "Vendor submitted for approval" });
-    } catch (error) {
-        res.status(500).json({ error: "Failed to add vendor" });
-    }
+    const newVendor = new Vendor({
+      business_name,
+      category,
+      location,
+      phone,
+      image,
+      email,
+      status: "pending"
+    });
+
+    await newVendor.save();
+
+    res.json({ message: "Vendor submitted for approval" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to add vendor" });
+  }
 });
 
-// UPDATE vendor status
-app.put('/vendors/:id', async (req, res) => {
-    try {
-        await Vendor.findByIdAndUpdate(
-            req.params.id,
-            { status: req.body.status }
-        );
+// PUT update vendor status or details
+app.put("/vendors/:id", async (req, res) => {
+  try {
+    const updatedVendor = await Vendor.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true }
+    );
 
-        res.json({ message: "Vendor status updated successfully" });
-    } catch (error) {
-        res.status(500).json({ error: "Failed to update vendor" });
+    if (!updatedVendor) {
+      return res.status(404).json({ error: "Vendor not found" });
     }
+
+    res.json({
+      message: "Vendor updated successfully",
+      vendor: updatedVendor
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to update vendor" });
+  }
 });
-// DELETE a vendor by ID
-app.delete('/vendors/:id', async (req, res) => {
-    try {
-        const vendor = await Vendor.findByIdAndDelete(req.params.id);
 
-        if (!vendor) {
-            return res.status(404).json({ message: "Vendor not found" });
-        }
+// DELETE vendor
+app.delete("/vendors/:id", async (req, res) => {
+  try {
+    const deletedVendor = await Vendor.findByIdAndDelete(req.params.id);
 
-        res.json({ message: "Vendor deleted successfully" });
-    } catch (error) {
-        res.status(500).json({ error: "Failed to delete vendor" });
+    if (!deletedVendor) {
+      return res.status(404).json({ error: "Vendor not found" });
     }
+
+    res.json({ message: "Vendor deleted successfully" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to delete vendor" });
+  }
 });
+
+// =========================
+// AUTH ROUTES
+// =========================
+
+console.log("Signup route loaded");
+
+// SIGNUP
+app.post("/signup", async (req, res) => {
+  try {
+    const { name, email, password, role } = req.body;
+
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ error: "User already exists" });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const user = new User({
+      name,
+      email,
+      password: hashedPassword,
+      role
+    });
+
+    await user.save();
+
+    res.json({ message: "User registered successfully" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Signup failed" });
+  }
+});
+
+// LOGIN
+app.post("/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(400).json({ error: "User not found" });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ error: "Invalid credentials" });
+    }
+
+    res.json({
+      message: "Login successful",
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role
+      }
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Login failed" });
+  }
+});
+
+// =========================
+// START SERVER
+// =========================
 
 app.listen(PORT, () => {
-    console.log(`🚀 Server running on http://localhost:${PORT}`);
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
